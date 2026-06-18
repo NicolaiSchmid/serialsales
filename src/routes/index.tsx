@@ -9,11 +9,17 @@ export const Route = createFileRoute('/')({
   component: Home,
 })
 
+type Paragraph = {
+  start: string | null
+  text: string
+}
+
 function Home() {
   const [files, setFiles] = useState<Array<TranscriptFile>>([])
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
-  const [activeKey, setActiveKey] = useState<string | null>(null)
-  const [activeText, setActiveText] = useState('')
+  const [activeFile, setActiveFile] = useState<TranscriptFile | null>(null)
+  const [paragraphs, setParagraphs] = useState<Array<Paragraph>>([])
+  const [previewState, setPreviewState] = useState<'idle' | 'loading' | 'error'>('idle')
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
   const [query, setQuery] = useState('')
@@ -47,6 +53,28 @@ function Home() {
     }
   }, [])
 
+  // Close the drawer with Escape and lock background scroll while it is open.
+  useEffect(() => {
+    if (!activeFile) {
+      return
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setActiveFile(null)
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [activeFile])
+
   const filteredFiles = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
 
@@ -54,7 +82,7 @@ function Home() {
       return files
     }
 
-    return files.filter((file) => file.name.toLowerCase().includes(normalizedQuery))
+    return files.filter((file) => file.title.toLowerCase().includes(normalizedQuery))
   }, [files, query])
 
   const selectedFiles = useMemo(
@@ -63,16 +91,16 @@ function Home() {
   )
 
   async function openTranscript(file: TranscriptFile) {
-    setActiveKey(file.key)
-    setActiveText('Loading transcript...')
+    setActiveFile(file)
+    setParagraphs([])
+    setPreviewState('loading')
 
     try {
       const transcript = await orpc.getTranscriptFile({ key: file.key })
-      setActiveText(transcript.text)
-    } catch (cause) {
-      setActiveText(
-        `Could not load transcript: ${cause instanceof Error ? cause.message : String(cause)}`,
-      )
+      setParagraphs(srtToParagraphs(transcript.text))
+      setPreviewState('idle')
+    } catch {
+      setPreviewState('error')
     }
   }
 
@@ -88,10 +116,6 @@ function Home() {
 
       return next
     })
-  }
-
-  function selectVisible() {
-    setSelectedKeys(new Set(filteredFiles.map((file) => file.key)))
   }
 
   function clearSelected() {
@@ -115,14 +139,8 @@ function Home() {
       }
 
       const zipped = zipSync(entries, { level: 6 })
-      const blob = new Blob([zipped], { type: 'application/zip' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
 
-      link.href = url
-      link.download = 'serialsales-transcripts.zip'
-      link.click()
-      URL.revokeObjectURL(url)
+      triggerDownload(new Blob([zipped], { type: 'application/zip' }), 'serialsales-transcripts.zip')
     } finally {
       setIsDownloading(false)
     }
@@ -130,106 +148,244 @@ function Home() {
 
   async function downloadSingle(file: TranscriptFile) {
     const transcript = await orpc.getTranscriptFile({ key: file.key })
-    const blob = new Blob([transcript.text], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
 
-    link.href = url
-    link.download = file.name
-    link.click()
-    URL.revokeObjectURL(url)
+    triggerDownload(
+      new Blob([transcript.text], { type: 'text/plain;charset=utf-8' }),
+      file.name,
+    )
   }
 
   return (
-    <main className="app-shell">
-      <section className="masthead">
-        <p className="eyebrow">Serial Sales</p>
-        <h1>Transcript Archive</h1>
-        <div className="search-bar">
-          <input
-            aria-label="Filter transcript files"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Filter transcript files"
-            type="search"
-            value={query}
-          />
-          <span>{filteredFiles.length} files</span>
-        </div>
-      </section>
+    <>
+      <main className="app-shell">
+        <header className="masthead">
+          <p className="eyebrow">Serial Sales</p>
+          <h1>Transcript Archive</h1>
+          <p className="lede">
+            Every episode, transcribed and searchable.
+            {files.length > 0 ? ` ${files.length} transcripts and counting.` : ''}
+          </p>
+        </header>
 
-      <section className="toolbar" aria-label="Transcript actions">
-        <button type="button" onClick={selectVisible} disabled={filteredFiles.length === 0}>
-          Select visible
-        </button>
-        <button type="button" onClick={clearSelected} disabled={selectedKeys.size === 0}>
-          Clear
-        </button>
-        <button
-          type="button"
-          onClick={() => void downloadZip(selectedFiles)}
-          disabled={selectedFiles.length === 0 || isDownloading}
-        >
-          Download selected
-        </button>
-        <button
-          type="button"
-          onClick={() => void downloadZip(filteredFiles)}
-          disabled={filteredFiles.length === 0 || isDownloading}
-        >
-          Download all visible
-        </button>
-      </section>
-
-      {error ? <p className="notice error">{error}</p> : null}
-      {isLoading ? <p className="notice">Loading transcripts...</p> : null}
-
-      <section className="workspace">
-        <div className="file-list" aria-label="Transcript files">
-          {filteredFiles.map((file) => (
-            <article key={file.key} className="file-row">
-              <input
-                aria-label={`Select ${file.name}`}
-                checked={selectedKeys.has(file.key)}
-                onChange={() => toggleSelected(file.key)}
-                type="checkbox"
-              />
-              <button type="button" onClick={() => void openTranscript(file)}>
-                <span>{file.name}</span>
-                <small>{formatBytes(file.size)}</small>
-              </button>
-              <button type="button" onClick={() => void downloadSingle(file)}>
-                Download
-              </button>
-            </article>
-          ))}
-          {!isLoading && filteredFiles.length === 0 ? (
-            <p className="empty-state">No transcript files found in R2 yet.</p>
-          ) : null}
-        </div>
-
-        <aside className="preview" aria-label="Transcript preview">
-          <header>
-            <span>Preview</span>
-            {activeKey ? (
-              <button
-                type="button"
-                onClick={() => {
-                  const file = files.find((item) => item.key === activeKey)
-
-                  if (file) {
-                    void downloadSingle(file)
-                  }
-                }}
-              >
-                Download
+        <div className="controls">
+          <label className="search">
+            <SearchIcon />
+            <input
+              aria-label="Search transcripts"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search transcripts"
+              type="search"
+              value={query}
+            />
+            {query ? (
+              <button aria-label="Clear search" onClick={() => setQuery('')} type="button">
+                <CloseIcon />
               </button>
             ) : null}
-          </header>
-          <pre>{activeText || 'Select a transcript to preview it.'}</pre>
+          </label>
+
+          <div className="controls-meta">
+            <span className="count">
+              {filteredFiles.length}
+              {filteredFiles.length === files.length ? '' : ` / ${files.length}`} shown
+            </span>
+            <button
+              className="btn"
+              disabled={filteredFiles.length === 0 || isDownloading}
+              onClick={() => void downloadZip(filteredFiles)}
+              type="button"
+            >
+              {isDownloading ? 'Preparing…' : 'Download all'}
+            </button>
+          </div>
+        </div>
+
+        {error ? <p className="notice error">{error}</p> : null}
+
+        {isLoading ? (
+          <div className="grid" aria-hidden>
+            {Array.from({ length: 8 }).map((_, index) => (
+              <div className="card card--skeleton" key={index}>
+                <div className="thumb" />
+                <div className="card-body">
+                  <div className="skeleton-line" />
+                  <div className="skeleton-line skeleton-line--short" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : filteredFiles.length === 0 ? (
+          <div className="empty-state">
+            <p>{files.length === 0 ? 'No transcripts in the archive yet.' : 'No transcripts match your search.'}</p>
+          </div>
+        ) : (
+          <div className="grid">
+            {filteredFiles.map((file) => {
+              const isSelected = selectedKeys.has(file.key)
+
+              return (
+                <article className={`card${isSelected ? ' card--selected' : ''}`} key={file.key}>
+                  <button
+                    className="thumb"
+                    onClick={() => void openTranscript(file)}
+                    type="button"
+                  >
+                    {file.thumbnailUrl ? (
+                      <img
+                        alt=""
+                        loading="lazy"
+                        onError={(event) => {
+                          event.currentTarget.style.visibility = 'hidden'
+                        }}
+                        src={file.thumbnailUrl}
+                      />
+                    ) : (
+                      <span className="thumb-fallback">SRT</span>
+                    )}
+                    <span className="thumb-size">{formatBytes(file.size)}</span>
+                  </button>
+
+                  <label
+                    className="card-check"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <input
+                      aria-label={`Select ${file.title}`}
+                      checked={isSelected}
+                      onChange={() => toggleSelected(file.key)}
+                      type="checkbox"
+                    />
+                    <CheckIcon />
+                  </label>
+
+                  <div className="card-body">
+                    <button
+                      className="card-title"
+                      onClick={() => void openTranscript(file)}
+                      type="button"
+                    >
+                      {file.title}
+                    </button>
+                    <div className="card-meta">
+                      <span>{formatDate(file.publishedAt)}</span>
+                      {file.youtubeUrl ? (
+                        <a
+                          href={file.youtubeUrl}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          YouTube
+                        </a>
+                      ) : null}
+                    </div>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </main>
+
+      {selectedFiles.length > 0 ? (
+        <div className="bulkbar" role="status">
+          <span>{selectedFiles.length} selected</span>
+          <div className="bulkbar-actions">
+            <button className="btn btn--ghost" onClick={clearSelected} type="button">
+              Clear
+            </button>
+            <button
+              className="btn"
+              disabled={isDownloading}
+              onClick={() => void downloadZip(selectedFiles)}
+              type="button"
+            >
+              {isDownloading ? 'Preparing…' : 'Download selected'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <div
+        className={`drawer-root${activeFile ? ' drawer-root--open' : ''}`}
+        aria-hidden={activeFile ? undefined : true}
+      >
+        <button
+          className="drawer-scrim"
+          aria-label="Close transcript"
+          onClick={() => setActiveFile(null)}
+          tabIndex={activeFile ? 0 : -1}
+          type="button"
+        />
+        <aside className="drawer" aria-label="Transcript">
+          {activeFile ? (
+            <>
+              <header className="drawer-head">
+                <div className="drawer-head-text">
+                  <p className="eyebrow">{formatDate(activeFile.publishedAt)}</p>
+                  <h2>{activeFile.title}</h2>
+                </div>
+                <button
+                  className="icon-btn"
+                  aria-label="Close"
+                  onClick={() => setActiveFile(null)}
+                  type="button"
+                >
+                  <CloseIcon />
+                </button>
+              </header>
+
+              <div className="drawer-actions">
+                {activeFile.youtubeUrl ? (
+                  <a
+                    className="btn btn--ghost"
+                    href={activeFile.youtubeUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Watch on YouTube
+                  </a>
+                ) : null}
+                <button
+                  className="btn btn--ghost"
+                  onClick={() => activeFile && void downloadSingle(activeFile)}
+                  type="button"
+                >
+                  Download .srt
+                </button>
+              </div>
+
+              <div className="transcript">
+                {previewState === 'loading' ? (
+                  <p className="muted">Loading transcript…</p>
+                ) : previewState === 'error' ? (
+                  <p className="muted">Could not load this transcript. Try again.</p>
+                ) : paragraphs.length === 0 ? (
+                  <p className="muted">This transcript is empty.</p>
+                ) : (
+                  paragraphs.map((paragraph, index) => (
+                    <p key={index}>
+                      {paragraph.start ? <span className="ts">{paragraph.start}</span> : null}
+                      {paragraph.text}
+                    </p>
+                  ))
+                )}
+              </div>
+            </>
+          ) : null}
         </aside>
-      </section>
-    </main>
+      </div>
+    </>
   )
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 function formatBytes(bytes: number) {
@@ -238,8 +394,107 @@ function formatBytes(bytes: number) {
   }
 
   if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / 1024).toFixed(0)} KB`
   }
 
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+const DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+})
+
+function formatDate(value: string | null) {
+  if (!value) {
+    return 'Undated'
+  }
+
+  const date = new Date(`${value}T00:00:00Z`)
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Undated'
+  }
+
+  return DATE_FORMATTER.format(date)
+}
+
+// Parse SRT into readable paragraphs: drop the cue index and timestamp noise,
+// group a handful of cues together, and keep a single faint mm:ss marker.
+function srtToParagraphs(srt: string): Array<Paragraph> {
+  const blocks = srt.replace(/\r/g, '').trim().split(/\n\n+/)
+  const cues: Array<{ start: string | null; text: string }> = []
+
+  for (const block of blocks) {
+    const lines = block.split('\n')
+    let index = /^\d+$/.test((lines[0] ?? '').trim()) ? 1 : 0
+    const timestampLine = lines[index] ?? ''
+    const match = timestampLine.match(/(\d{2}):(\d{2}):(\d{2})[,.]\d{3}\s*-->/)
+
+    if (match) {
+      index += 1
+    }
+
+    const text = lines
+      .slice(index)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!text) {
+      continue
+    }
+
+    const start = match ? `${match[1] === '00' ? match[2] : `${match[1]}:${match[2]}`}:${match[3]}` : null
+
+    cues.push({ start, text })
+  }
+
+  const paragraphs: Array<Paragraph> = []
+  const cuesPerParagraph = 5
+
+  for (let i = 0; i < cues.length; i += cuesPerParagraph) {
+    const chunk = cues.slice(i, i + cuesPerParagraph)
+
+    paragraphs.push({
+      start: chunk[0]?.start ?? null,
+      text: chunk.map((cue) => cue.text).join(' '),
+    })
+  }
+
+  return paragraphs
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden height="18" viewBox="0 0 24 24" width="18">
+      <circle cx="11" cy="11" fill="none" r="7" stroke="currentColor" strokeWidth="2" />
+      <line stroke="currentColor" strokeLinecap="round" strokeWidth="2" x1="16.5" x2="21" y1="16.5" y2="21" />
+    </svg>
+  )
+}
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden height="18" viewBox="0 0 24 24" width="18">
+      <line stroke="currentColor" strokeLinecap="round" strokeWidth="2" x1="6" x2="18" y1="6" y2="18" />
+      <line stroke="currentColor" strokeLinecap="round" strokeWidth="2" x1="18" x2="6" y1="6" y2="18" />
+    </svg>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg aria-hidden height="14" viewBox="0 0 24 24" width="14">
+      <polyline
+        fill="none"
+        points="4 12.5 9.5 18 20 6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="3"
+      />
+    </svg>
+  )
 }
