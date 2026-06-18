@@ -85,6 +85,34 @@ export async function fetchLatestChannelVideos(
   })
 }
 
+// Many seeded `.srt` keys carry only `<date>-<id>` with no human title, so we
+// resolve it from YouTube's public oEmbed endpoint (no API key, no auth). The
+// cron caches every result in index.json, so each id is fetched at most once.
+export async function fetchVideoTitle(
+  videoId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  const endpoint = `https://www.youtube.com/oembed?url=${encodeURIComponent(
+    `https://www.youtube.com/watch?v=${videoId}`,
+  )}&format=json`
+
+  try {
+    const response = await fetchImpl(endpoint)
+
+    if (!response.ok) {
+      return null
+    }
+
+    const data = (await response.json()) as { title?: unknown }
+
+    return typeof data.title === 'string' && data.title.trim()
+      ? data.title.trim()
+      : null
+  } catch {
+    return null
+  }
+}
+
 export async function fetchVideoTranscript(
   videoId: string,
   fetchImpl: typeof fetch = fetch,

@@ -6,12 +6,20 @@ import {
   transcriptTextToSrt,
   videoIdFromTranscriptKey,
 } from './format'
-import { fetchLatestChannelVideos, fetchVideoTranscript } from './youtube'
+import {
+  fetchLatestChannelVideos,
+  fetchVideoTitle,
+  fetchVideoTranscript,
+} from './youtube'
 
 const TRANSCRIPTS_PREFIX = 'transcripts/'
 const VIDEOS_PREFIX = 'videos/'
 const FAILURES_PREFIX = 'failures/'
 const MAX_FAILURE_AGE_MS = 24 * 60 * 60 * 1000
+// Cap oEmbed title lookups per run to stay well within subrequest limits;
+// resolved titles are cached in index.json, so this only matters until the
+// archive is fully resolved.
+const MAX_TITLE_LOOKUPS = 60
 
 type SyncOptions = {
   cron?: string
@@ -197,11 +205,14 @@ async function putFailure(
 }
 
 // The index is the UI's source of truth, so it carries the full display
-// metadata (title, publication date, thumbnail) derived from each key. Entries
-// without a resolvable video id — stray/partial seed objects — are dropped so
-// they never surface as broken cards.
+// metadata (title, publication date, thumbnail) for every transcript. Titles
+// come from the key when present; for `<date>-<id>` seed keys with no embedded
+// title we resolve it via oEmbed and cache the result back into index.json, so
+// each id is looked up at most once. Entries without a resolvable video id —
+// stray/partial seed objects — are dropped so they never render as broken cards.
 async function writeTranscriptIndex(bucket: R2Bucket, generatedAt: string) {
-  const files: Array<IndexEntry> = []
+  const titleCache = await readIndexTitleCache(bucket)
+  const pending: Array<{ entry: IndexEntry; needsTitle: boolean }> = []
   let cursor: string | undefined
 
   do {
@@ -219,21 +230,45 @@ async function writeTranscriptIndex(bucket: R2Bucket, generatedAt: string) {
         continue
       }
 
-      files.push({
-        key: object.key,
-        name: transcriptNameFromKey(object.key),
-        size: object.size,
-        uploaded: object.uploaded?.toISOString() ?? null,
-        videoId,
-        title: meta.title,
-        publishedAt: meta.publishedAt,
-        thumbnailUrl: meta.thumbnailUrl,
-        youtubeUrl: meta.youtubeUrl,
+      // A title that equals the id means the key had no human-readable title.
+      const titleFromKey = meta.title !== videoId
+      const cached = titleCache.get(videoId)
+
+      pending.push({
+        entry: {
+          key: object.key,
+          name: transcriptNameFromKey(object.key),
+          size: object.size,
+          uploaded: object.uploaded?.toISOString() ?? null,
+          videoId,
+          title: titleFromKey ? meta.title : (cached ?? meta.title),
+          publishedAt: meta.publishedAt,
+          thumbnailUrl: meta.thumbnailUrl,
+          youtubeUrl: meta.youtubeUrl,
+        },
+        needsTitle: !titleFromKey && !cached,
       })
     }
 
     cursor = page.truncated ? page.cursor : undefined
   } while (cursor)
+
+  let lookups = 0
+
+  for (const item of pending) {
+    if (!item.needsTitle || lookups >= MAX_TITLE_LOOKUPS) {
+      continue
+    }
+
+    lookups += 1
+    const resolved = await fetchVideoTitle(item.entry.videoId)
+
+    if (resolved) {
+      item.entry.title = resolved
+    }
+  }
+
+  const files = pending.map((item) => item.entry)
 
   // Newest first — the archive reads as a reverse-chronological feed.
   files.sort((a, b) =>
@@ -244,6 +279,36 @@ async function writeTranscriptIndex(bucket: R2Bucket, generatedAt: string) {
     generatedAt,
     files,
   })
+}
+
+async function readIndexTitleCache(bucket: R2Bucket) {
+  const cache = new Map<string, string>()
+  const object = await bucket.get('index.json')
+
+  if (!object) {
+    return cache
+  }
+
+  try {
+    const data = (await object.json()) as {
+      files?: Array<{ videoId?: string; title?: string }>
+    }
+
+    for (const file of data.files ?? []) {
+      if (
+        file.videoId &&
+        typeof file.title === 'string' &&
+        file.title &&
+        file.title !== file.videoId
+      ) {
+        cache.set(file.videoId, file.title)
+      }
+    }
+  } catch {
+    // A malformed index just means we re-resolve titles this run.
+  }
+
+  return cache
 }
 
 async function putJson(bucket: R2Bucket, key: string, value: unknown) {
