@@ -37,7 +37,8 @@ Before substantial work:
 ## Deployment Notes
 
 - Target host: Cloudflare Workers.
-- The Cloudflare integration will be added in a separate commit after the initial boilerplate commit.
+- Cloudflare integration uses `@cloudflare/vite-plugin`, `wrangler`, and `wrangler.jsonc`.
+- Deploy with `npm run deploy`.
 - Expected public domain: `serialsales.nicolaischmid.com`.
 
 ## Architecture Notes
