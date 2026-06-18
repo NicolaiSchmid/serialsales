@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { zipSync } from 'fflate'
+import { usePostHog } from '@posthog/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { orpc } from '../lib/orpc/client'
@@ -15,6 +16,7 @@ type Paragraph = {
 }
 
 function Home() {
+  const posthog = usePostHog()
   const [files, setFiles] = useState<Array<TranscriptFile>>([])
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [activeFile, setActiveFile] = useState<TranscriptFile | null>(null)
@@ -75,6 +77,22 @@ function Home() {
     }
   }, [activeFile])
 
+  // Capture a search only once the query settles, so a single live search
+  // ("episode") records one event instead of one per keystroke.
+  useEffect(() => {
+    const normalizedQuery = query.trim()
+
+    if (normalizedQuery.length < 3) {
+      return
+    }
+
+    const timeout = setTimeout(() => {
+      posthog.capture('search_performed', { query: normalizedQuery })
+    }, 600)
+
+    return () => clearTimeout(timeout)
+  }, [query, posthog])
+
   const filteredFiles = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
 
@@ -94,13 +112,21 @@ function Home() {
     setActiveFile(file)
     setParagraphs([])
     setPreviewState('loading')
+    posthog.capture('transcript_opened', {
+      key: file.key,
+      title: file.title,
+      video_id: file.videoId,
+    })
 
     try {
       const transcript = await orpc.getTranscriptFile({ key: file.key })
       setParagraphs(srtToParagraphs(transcript.text))
       setPreviewState('idle')
-    } catch {
+    } catch (cause) {
       setPreviewState('error')
+      posthog.captureException(cause instanceof Error ? cause : new Error(String(cause)), {
+        key: file.key,
+      })
     }
   }
 
@@ -141,6 +167,10 @@ function Home() {
       const zipped = zipSync(entries, { level: 6 })
 
       triggerDownload(new Blob([zipped], { type: 'application/zip' }), 'serialsales-transcripts.zip')
+      posthog.capture('transcripts_bulk_downloaded', {
+        count: filesToDownload.length,
+        is_filtered: filesToDownload.length !== files.length,
+      })
     } finally {
       setIsDownloading(false)
     }
@@ -153,6 +183,11 @@ function Home() {
       new Blob([transcript.text], { type: 'text/plain;charset=utf-8' }),
       file.name,
     )
+    posthog.capture('transcript_downloaded', {
+      key: file.key,
+      title: file.title,
+      video_id: file.videoId,
+    })
   }
 
   return (
@@ -270,6 +305,7 @@ function Home() {
                       {file.youtubeUrl ? (
                         <a
                           href={file.youtubeUrl}
+                          onClick={() => posthog.capture('youtube_link_opened', { key: file.key, title: file.title, source: 'card' })}
                           rel="noreferrer"
                           target="_blank"
                         >
@@ -338,6 +374,7 @@ function Home() {
                   <a
                     className="btn btn--ghost"
                     href={activeFile.youtubeUrl}
+                    onClick={() => posthog.capture('youtube_link_opened', { key: activeFile.key, title: activeFile.title, source: 'drawer' })}
                     rel="noreferrer"
                     target="_blank"
                   >
