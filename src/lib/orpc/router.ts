@@ -28,8 +28,9 @@ export type TranscriptFile = {
 export const appRouter = {
   listTranscriptFiles: os.handler(async () => {
     // The cron-maintained index is the source of truth: it carries titles
-    // resolved via oEmbed for keys that don't embed one. Fall back to deriving
-    // straight from the bucket if the index is missing or unreadable.
+    // resolved from the channel feed or oEmbed for keys that don't embed one.
+    // Fall back to deriving straight from the bucket if the index is missing
+    // or unreadable.
     const files = (await readIndexFiles()) ?? (await listFilesFromBucket())
 
     // Newest first — an archive reads best as a reverse-chronological feed.

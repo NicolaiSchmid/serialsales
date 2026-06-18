@@ -123,7 +123,7 @@ export async function syncTranscripts(
     }
   }
 
-  await writeTranscriptIndex(bucket, checkedAt)
+  await writeTranscriptIndex(bucket, checkedAt, videos)
   await putJson(bucket, 'sync/latest.json', result)
 
   return result
@@ -208,10 +208,28 @@ async function putFailure(
 // metadata (title, publication date, thumbnail) for every transcript. Titles
 // come from the key when present; for `<date>-<id>` seed keys with no embedded
 // title we resolve it via oEmbed and cache the result back into index.json, so
-// each id is looked up at most once. Entries without a resolvable video id —
-// stray/partial seed objects — are dropped so they never render as broken cards.
-async function writeTranscriptIndex(bucket: R2Bucket, generatedAt: string) {
+// each id is looked up at most once. Titles from the channel feed are preferred
+// when available — they are free, authoritative, and cover the latest ~15
+// videos, so the newest entries never wait on the rate-limited lookup queue.
+// Entries without a resolvable video id — stray/partial seed objects — are
+// dropped so they never render as broken cards.
+async function writeTranscriptIndex(
+  bucket: R2Bucket,
+  generatedAt: string,
+  videos: Array<YouTubeVideo>,
+) {
   const titleCache = await readIndexTitleCache(bucket)
+  // The channel feed carries real titles for the latest ~15 videos. Prefer them
+  // for seed keys with no embedded title, so the newest entries never need a
+  // per-video lookup and the InnerTube fallback only covers the older backlog.
+  const feedTitles = new Map<string, string>()
+
+  for (const video of videos) {
+    if (video.id && video.title && video.title !== video.id) {
+      feedTitles.set(video.id, video.title)
+    }
+  }
+
   const pending: Array<{ entry: IndexEntry; needsTitle: boolean }> = []
   let cursor: string | undefined
 
@@ -232,6 +250,7 @@ async function writeTranscriptIndex(bucket: R2Bucket, generatedAt: string) {
 
       // A title that equals the id means the key had no human-readable title.
       const titleFromKey = meta.title !== videoId
+      const feedTitle = feedTitles.get(videoId)
       const cached = titleCache.get(videoId)
 
       pending.push({
@@ -241,12 +260,14 @@ async function writeTranscriptIndex(bucket: R2Bucket, generatedAt: string) {
           size: object.size,
           uploaded: object.uploaded?.toISOString() ?? null,
           videoId,
-          title: titleFromKey ? meta.title : (cached ?? meta.title),
+          title: titleFromKey
+            ? meta.title
+            : (feedTitle ?? cached ?? meta.title),
           publishedAt: meta.publishedAt,
           thumbnailUrl: meta.thumbnailUrl,
           youtubeUrl: meta.youtubeUrl,
         },
-        needsTitle: !titleFromKey && !cached,
+        needsTitle: !titleFromKey && !feedTitle && !cached,
       })
     }
 
