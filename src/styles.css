@@ -322,20 +322,6 @@ h1 {
   letter-spacing: 0.12em;
 }
 
-.thumb-size {
-  position: absolute;
-  right: 0.55rem;
-  bottom: 0.55rem;
-  padding: 0.15rem 0.45rem;
-  border-radius: 6px;
-  color: #ffffff;
-  font-size: 0.7rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  background: rgba(15, 23, 21, 0.72);
-  backdrop-filter: blur(2px);
-}
-
 .card-check {
   position: absolute;
   top: 0.55rem;

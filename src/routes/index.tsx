@@ -242,7 +242,6 @@ function Home() {
                     ) : (
                       <span className="thumb-fallback">SRT</span>
                     )}
-                    <span className="thumb-size">{formatBytes(file.size)}</span>
                   </button>
 
                   <label
@@ -386,18 +385,6 @@ function triggerDownload(blob: Blob, filename: string) {
   link.download = filename
   link.click()
   URL.revokeObjectURL(url)
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) {
-    return `${bytes} B`
-  }
-
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(0)} KB`
-  }
-
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 const DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {

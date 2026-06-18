@@ -43,12 +43,20 @@ Before substantial work:
 - `workers_dev` is disabled; production access should use the custom domain route.
 - Cloudflare bindings:
   - `TRANSCRIPTS`: R2 bucket `serialsales-transcripts`
+- Cron trigger: `0 * * * *` runs the transcript sync hourly (`src/worker.ts`).
 
 ## Architecture Notes
 
 - Keep the initial app blank and small.
-- The transcript updater should be TypeScript-only and run on Cloudflare using Cron Triggers.
+- The transcript updater is TypeScript-only and runs on Cloudflare via a Cron Trigger (`src/worker.ts` → `syncTranscripts`).
 - Keep storage skinny initially: R2 is the source of truth for transcript artifacts and `index.json`.
+- R2 layout:
+  - `transcripts/`: downloadable `.srt` files shown in the UI.
+  - `videos/`: JSON transcript artifacts with segments and full video metadata.
+  - `failures/`: temporary fetch/no-caption records, retried after 24 hours.
+  - `index.json`: UI source of truth — every transcript with display metadata
+    (title, publication date, thumbnail), derived from the key in `format.ts`.
+  - `sync/latest.json` and `sync/queue.json`: cron observability.
 - Add D1 later only if client-side/static search becomes insufficient.
 - Do not add a container or Hermes dependency unless the TypeScript caption fetch path becomes unreliable.
 
@@ -60,6 +68,5 @@ Before substantial work:
 
 ## Next Steps
 
-- Add the initial transcript artifact sync into R2.
-- Add the hourly updater.
+- Seed any remaining local `.srt` files into R2.
 - Add richer search only if filename filtering becomes too thin.

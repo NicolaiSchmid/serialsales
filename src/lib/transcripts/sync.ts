@@ -1,0 +1,253 @@
+import type { TranscriptArtifact, YouTubeVideo } from './types'
+import {
+  parseTranscriptMeta,
+  transcriptKeyForVideo,
+  transcriptNameFromKey,
+  transcriptTextToSrt,
+  videoIdFromTranscriptKey,
+} from './format'
+import { fetchLatestChannelVideos, fetchVideoTranscript } from './youtube'
+
+const TRANSCRIPTS_PREFIX = 'transcripts/'
+const VIDEOS_PREFIX = 'videos/'
+const FAILURES_PREFIX = 'failures/'
+const MAX_FAILURE_AGE_MS = 24 * 60 * 60 * 1000
+
+type SyncOptions = {
+  cron?: string
+  maxDownloads?: number
+  reason: 'scheduled' | 'manual'
+}
+
+type FailureRecord = {
+  video: YouTubeVideo
+  failedAt: string
+  reason: string
+  status: 'error' | 'no_captions'
+}
+
+type IndexEntry = {
+  key: string
+  name: string
+  size: number
+  uploaded: string | null
+  videoId: string
+  title: string
+  publishedAt: string | null
+  thumbnailUrl: string | null
+  youtubeUrl: string | null
+}
+
+type SyncResult = {
+  checkedAt: string
+  cron: string | null
+  reason: SyncOptions['reason']
+  totalVideos: number
+  existingTranscripts: number
+  queued: Array<{ id: string; title: string }>
+  downloaded: Array<{ id: string; key: string }>
+  skipped: Array<{ id: string; reason: string }>
+  failed: Array<{ id: string; reason: string }>
+}
+
+export async function syncTranscripts(
+  bucket: R2Bucket,
+  options: SyncOptions,
+): Promise<SyncResult> {
+  const checkedAt = new Date().toISOString()
+  const videos = await fetchLatestChannelVideos()
+  const existingIds = await listExistingTranscriptIds(bucket)
+  const queue = await buildDownloadQueue(bucket, videos, existingIds)
+  const queued = queue.slice(0, options.maxDownloads ?? 10)
+  const result: SyncResult = {
+    checkedAt,
+    cron: options.cron ?? null,
+    reason: options.reason,
+    totalVideos: videos.length,
+    existingTranscripts: existingIds.size,
+    queued: queued.map((video) => ({ id: video.id, title: video.title })),
+    downloaded: [],
+    skipped: [],
+    failed: [],
+  }
+
+  await putJson(bucket, 'sync/queue.json', {
+    checkedAt,
+    videos: queue.map((video) => ({ id: video.id, title: video.title })),
+  })
+
+  for (const video of queued) {
+    try {
+      const transcript = await fetchVideoTranscript(video.id)
+
+      if (transcript.status === 'no_captions') {
+        result.skipped.push({ id: video.id, reason: transcript.reason })
+        await putFailure(bucket, video, transcript.reason, 'no_captions')
+        continue
+      }
+
+      const key = transcriptKeyForVideo(video, transcript.language)
+      const artifact: TranscriptArtifact = {
+        video,
+        language: transcript.language,
+        fetchedAt: new Date().toISOString(),
+        segments: transcript.segments,
+      }
+
+      await bucket.put(key, transcriptTextToSrt(transcript.segments), {
+        httpMetadata: { contentType: 'text/plain; charset=utf-8' },
+        customMetadata: {
+          videoId: video.id,
+          language: transcript.language,
+          source: 'youtube-captions',
+        },
+      })
+      await putJson(bucket, `${VIDEOS_PREFIX}${video.id}.json`, artifact)
+      await bucket.delete(`${FAILURES_PREFIX}${video.id}.json`)
+
+      existingIds.add(video.id)
+      result.downloaded.push({ id: video.id, key })
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause)
+
+      result.failed.push({ id: video.id, reason })
+      await putFailure(bucket, video, reason, 'error')
+    }
+  }
+
+  await writeTranscriptIndex(bucket, checkedAt)
+  await putJson(bucket, 'sync/latest.json', result)
+
+  return result
+}
+
+async function buildDownloadQueue(
+  bucket: R2Bucket,
+  videos: Array<YouTubeVideo>,
+  existingIds: Set<string>,
+) {
+  const queue: Array<YouTubeVideo> = []
+
+  for (const video of videos) {
+    if (!video.id || existingIds.has(video.id)) {
+      continue
+    }
+
+    if (await hasRecentFailure(bucket, video.id)) {
+      continue
+    }
+
+    queue.push(video)
+  }
+
+  return queue
+}
+
+async function listExistingTranscriptIds(bucket: R2Bucket) {
+  const ids = new Set<string>()
+  let cursor: string | undefined
+
+  do {
+    const page = await bucket.list({
+      cursor,
+      limit: 1000,
+      prefix: TRANSCRIPTS_PREFIX,
+    })
+
+    for (const object of page.objects) {
+      const id =
+        object.customMetadata?.videoId ?? videoIdFromTranscriptKey(object.key)
+
+      if (id) {
+        ids.add(id)
+      }
+    }
+
+    cursor = page.truncated ? page.cursor : undefined
+  } while (cursor)
+
+  return ids
+}
+
+async function hasRecentFailure(bucket: R2Bucket, videoId: string) {
+  const object = await bucket.get(`${FAILURES_PREFIX}${videoId}.json`)
+
+  if (!object) {
+    return false
+  }
+
+  const failure = (await object.json()) as FailureRecord
+  const failedAt = Date.parse(failure.failedAt)
+
+  return Number.isFinite(failedAt) && Date.now() - failedAt < MAX_FAILURE_AGE_MS
+}
+
+async function putFailure(
+  bucket: R2Bucket,
+  video: YouTubeVideo,
+  reason: string,
+  status: FailureRecord['status'],
+) {
+  await putJson(bucket, `${FAILURES_PREFIX}${video.id}.json`, {
+    failedAt: new Date().toISOString(),
+    reason,
+    status,
+    video,
+  } satisfies FailureRecord)
+}
+
+// The index is the UI's source of truth, so it carries the full display
+// metadata (title, publication date, thumbnail) derived from each key. Entries
+// without a resolvable video id — stray/partial seed objects — are dropped so
+// they never surface as broken cards.
+async function writeTranscriptIndex(bucket: R2Bucket, generatedAt: string) {
+  const files: Array<IndexEntry> = []
+  let cursor: string | undefined
+
+  do {
+    const page = await bucket.list({
+      cursor,
+      limit: 1000,
+      prefix: TRANSCRIPTS_PREFIX,
+    })
+
+    for (const object of page.objects) {
+      const meta = parseTranscriptMeta(object.key)
+      const videoId = object.customMetadata?.videoId ?? meta.videoId
+
+      if (!videoId) {
+        continue
+      }
+
+      files.push({
+        key: object.key,
+        name: transcriptNameFromKey(object.key),
+        size: object.size,
+        uploaded: object.uploaded?.toISOString() ?? null,
+        videoId,
+        title: meta.title,
+        publishedAt: meta.publishedAt,
+        thumbnailUrl: meta.thumbnailUrl,
+        youtubeUrl: meta.youtubeUrl,
+      })
+    }
+
+    cursor = page.truncated ? page.cursor : undefined
+  } while (cursor)
+
+  // Newest first — the archive reads as a reverse-chronological feed.
+  files.sort((a, b) =>
+    (b.publishedAt ?? b.name).localeCompare(a.publishedAt ?? a.name),
+  )
+
+  await putJson(bucket, 'index.json', {
+    generatedAt,
+    files,
+  })
+}
+
+async function putJson(bucket: R2Bucket, key: string, value: unknown) {
+  await bucket.put(key, `${JSON.stringify(value, null, 2)}\n`, {
+    httpMetadata: { contentType: 'application/json; charset=utf-8' },
+  })
+}
