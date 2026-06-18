@@ -11,6 +11,7 @@ Before substantial work:
 # Repository Instructions
 
 - Use Conventional Commits for git commit messages.
+- Scope Conventional Commits by area, e.g. `feat(cron):`, `feat(api):`, `fix(ui):`.
 - This project was scaffolded from a blank TanStack Start app and then trimmed to remove generated demo/example UI.
 
 ## Scaffold Log
