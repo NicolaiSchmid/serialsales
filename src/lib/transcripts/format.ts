@@ -29,6 +29,74 @@ export function transcriptTextToSrt(segments: Array<TranscriptSegment>) {
     .join('\n\n')}\n`
 }
 
+export type CaptionLine = { startMs: number; text: string }
+
+// YouTube auto (ASR) captions are delivered as a "rolling window": each spoken
+// line is re-emitted across several overlapping cues so it can scroll up the
+// screen, which makes a naive read repeat every line ~3 times. Walking the cue
+// lines in order and dropping any line identical to the one just emitted
+// reconstructs the spoken transcript exactly. Clean captions (e.g. our json3
+// fetch) carry each line once, so this is a no-op for them.
+export function captionLinesFromSrt(srt: string): Array<CaptionLine> {
+  const blocks = srt.replace(/\r/g, '').trim().split(/\n\n+/)
+  const lines: Array<CaptionLine> = []
+  let previous: string | null = null
+
+  for (const block of blocks) {
+    const rows = block.split('\n')
+    let index = /^\d+$/.test((rows[0] ?? '').trim()) ? 1 : 0
+    const stamp = (rows[index] ?? '').match(
+      /(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->/,
+    )
+    // A line with no timestamp inherits the previous cue's start so it still
+    // lands in the right place in the transcript.
+    const startMs = stamp
+      ? (Number(stamp[1]) * 3600 + Number(stamp[2]) * 60 + Number(stamp[3])) *
+          1000 +
+        Number(stamp[4])
+      : (lines.at(-1)?.startMs ?? 0)
+
+    if (stamp) {
+      index += 1
+    }
+
+    for (const row of rows.slice(index)) {
+      const text = row.replace(/\s+/g, ' ').trim()
+
+      if (!text || text === previous) {
+        continue
+      }
+
+      lines.push({ startMs, text })
+      previous = text
+    }
+  }
+
+  return lines
+}
+
+// Rewrites a (possibly rolling-window) SRT into a clean one with a single cue
+// per spoken line. Each line keeps the start time of its first appearance and
+// runs until the next line begins, so timings stay faithful to the source.
+export function cleanSrt(srt: string): string {
+  const lines = captionLinesFromSrt(srt)
+
+  if (lines.length === 0) {
+    return ''
+  }
+
+  return `${lines
+    .map((line, index) => {
+      const start = formatSrtTimestamp(line.startMs)
+      const end = formatSrtTimestamp(
+        Math.max(lines[index + 1]?.startMs ?? line.startMs + 4000, line.startMs),
+      )
+
+      return `${index + 1}\n${start} --> ${end}\n${line.text}`
+    })
+    .join('\n\n')}\n`
+}
+
 export function transcriptNameFromKey(key: string) {
   return key.split('/').at(-1) ?? key
 }

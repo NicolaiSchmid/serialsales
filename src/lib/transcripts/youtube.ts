@@ -220,19 +220,28 @@ function pickEnglishTrack(tracks: Array<CaptionTrack>) {
 }
 
 function parseJson3Segments(json: Json3Response): Array<TranscriptSegment> {
-  return (json.events ?? [])
-    .filter((event) => event.segs && event.aAppend !== 1)
-    .map((event) => ({
-      startMs: event.tStartMs ?? 0,
-      durationMs: event.dDurationMs ?? 0,
-      text: decodeXml(
-        event.segs
-          ?.map((segment) => segment.utf8 ?? '')
-          .join('')
-          .replace(/<[^>]+>/g, '') ?? '',
-      ).trim(),
-    }))
-    .filter((segment) => segment.text.length > 0)
+  return (
+    (json.events ?? [])
+      // `aAppend` events are the rolling-window newline pushes, not new speech.
+      .filter((event) => event.segs && event.aAppend !== 1)
+      .map((event) => ({
+        startMs: event.tStartMs ?? 0,
+        durationMs: event.dDurationMs ?? 0,
+        text: decodeXml(
+          event.segs
+            ?.map((segment) => segment.utf8 ?? '')
+            .join('')
+            .replace(/<[^>]+>/g, '') ?? '',
+        ).trim(),
+      }))
+      .filter((segment) => segment.text.length > 0)
+      // Guard against rolling-window variants that re-emit a line verbatim: drop
+      // any segment whose text repeats the one immediately before it.
+      .filter(
+        (segment, index, all) =>
+          index === 0 || segment.text !== all[index - 1].text,
+      )
+  )
 }
 
 function readXmlTag(xml: string, tagName: string) {

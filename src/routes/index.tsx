@@ -3,6 +3,7 @@ import { zipSync } from 'fflate'
 import { usePostHog } from '@posthog/react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { captionLinesFromSrt } from '../lib/transcripts/format'
 import { orpc } from '../lib/orpc/client'
 import type { TranscriptFile } from '../lib/orpc/router'
 
@@ -445,49 +446,36 @@ function formatDate(value: string | null) {
 }
 
 // Parse SRT into readable paragraphs: drop the cue index and timestamp noise,
-// group a handful of cues together, and keep a single faint mm:ss marker.
+// group a handful of lines together, and keep a single faint mm:ss marker.
 function srtToParagraphs(srt: string): Array<Paragraph> {
-  const blocks = srt.replace(/\r/g, '').trim().split(/\n\n+/)
-  const cues: Array<{ start: string | null; text: string }> = []
-
-  for (const block of blocks) {
-    const lines = block.split('\n')
-    let index = /^\d+$/.test((lines[0] ?? '').trim()) ? 1 : 0
-    const timestampLine = lines[index] ?? ''
-    const match = timestampLine.match(/(\d{2}):(\d{2}):(\d{2})[,.]\d{3}\s*-->/)
-
-    if (match) {
-      index += 1
-    }
-
-    const text = lines
-      .slice(index)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    if (!text) {
-      continue
-    }
-
-    const start = match ? `${match[1] === '00' ? match[2] : `${match[1]}:${match[2]}`}:${match[3]}` : null
-
-    cues.push({ start, text })
-  }
-
+  // captionLinesFromSrt collapses YouTube's rolling-window duplication, so each
+  // spoken line appears once regardless of how the stored SRT was generated.
+  const lines = captionLinesFromSrt(srt)
   const paragraphs: Array<Paragraph> = []
-  const cuesPerParagraph = 5
+  const linesPerParagraph = 5
 
-  for (let i = 0; i < cues.length; i += cuesPerParagraph) {
-    const chunk = cues.slice(i, i + cuesPerParagraph)
+  for (let i = 0; i < lines.length; i += linesPerParagraph) {
+    const chunk = lines.slice(i, i + linesPerParagraph)
 
     paragraphs.push({
-      start: chunk[0]?.start ?? null,
-      text: chunk.map((cue) => cue.text).join(' '),
+      start: formatClock(chunk[0]?.startMs ?? 0),
+      text: chunk.map((line) => line.text).join(' '),
     })
   }
 
   return paragraphs
+}
+
+function formatClock(milliseconds: number): string {
+  const totalSeconds = Math.floor(Math.max(0, milliseconds) / 1000)
+  const seconds = totalSeconds % 60
+  const minutes = Math.floor(totalSeconds / 60) % 60
+  const hours = Math.floor(totalSeconds / 3600)
+  const pad = (value: number) => value.toString().padStart(2, '0')
+
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(seconds)}`
+    : `${pad(minutes)}:${pad(seconds)}`
 }
 
 function SearchIcon() {
