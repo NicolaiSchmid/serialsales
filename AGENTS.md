@@ -66,6 +66,7 @@ Before substantial work:
 - YouTube caption access is unofficial. The current TypeScript plan uses YouTube InnerTube player metadata plus `json3` caption tracks.
 - Cloudflare environment variables are request-time bindings; avoid reading `process.env` at module scope.
 - TanStack Start code is isomorphic by default. Use server functions or Worker handlers for server-only work.
+- Exactly one Worker may write `index.json`. The cron in `serialsales` is the sole writer; the UI reads it. A second Worker bound to the same R2 bucket with its own cron will silently clobber `index.json` on every tick — this happened once via a leftover `serialsalesold` Worker (a rename/reconnect remnant) that ran stale code and produced a title-less index, causing titles to flicker between real and raw video IDs hour to hour. Before debugging title/index weirdness, confirm only `serialsales` exists and has a cron (`wrangler` cannot list other Workers — check the Cloudflare dashboard or the account `workers/scripts` API).
 
 ## Next Steps
 
