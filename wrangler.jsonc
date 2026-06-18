@@ -11,6 +11,12 @@
       "custom_domain": true
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "TRANSCRIPTS",
+      "bucket_name": "serialsales-transcripts"
+    }
+  ],
   "observability": {
     "enabled": true
   }

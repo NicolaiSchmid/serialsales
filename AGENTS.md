@@ -41,12 +41,15 @@ Before substantial work:
 - Deploy with `npm run deploy`.
 - Expected public domain: `serialsales.nicolaischmid.com`.
 - `workers_dev` is disabled; production access should use the custom domain route.
+- Cloudflare bindings:
+  - `TRANSCRIPTS`: R2 bucket `serialsales-transcripts`
 
 ## Architecture Notes
 
 - Keep the initial app blank and small.
 - The transcript updater should be TypeScript-only and run on Cloudflare using Cron Triggers.
-- Prefer D1 for video metadata/search indexing and R2 for raw transcript artifacts.
+- Keep storage skinny initially: R2 is the source of truth for transcript artifacts and `index.json`.
+- Add D1 later only if client-side/static search becomes insufficient.
 - Do not add a container or Hermes dependency unless the TypeScript caption fetch path becomes unreliable.
 
 ## Known Gotchas
@@ -57,7 +60,6 @@ Before substantial work:
 
 ## Next Steps
 
-- Add Cloudflare Workers deployment config.
-- Add D1/R2 bindings and migrations.
+- Add the initial transcript artifact sync into R2.
 - Add the hourly updater.
-- Build archive/search UI in small commits.
+- Add richer search only if filename filtering becomes too thin.

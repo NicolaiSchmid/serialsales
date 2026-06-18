@@ -164,7 +164,13 @@ async function fetchCaptionTracks(
       continue
     }
 
-    const data = await response.json()
+    const data = (await response.json()) as {
+      captions?: {
+        playerCaptionsTracklistRenderer?: {
+          captionTracks?: Array<CaptionTrack>
+        }
+      }
+    }
     const tracks =
       data?.captions?.playerCaptionsTracklistRenderer?.captionTracks
 
