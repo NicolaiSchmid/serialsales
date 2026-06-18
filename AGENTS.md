@@ -40,6 +40,7 @@ Before substantial work:
 - Cloudflare integration uses `@cloudflare/vite-plugin`, `wrangler`, and `wrangler.jsonc`.
 - Deploy with `npm run deploy`.
 - Expected public domain: `serialsales.nicolaischmid.com`.
+- `workers_dev` is disabled; production access should use the custom domain route.
 
 ## Architecture Notes
 

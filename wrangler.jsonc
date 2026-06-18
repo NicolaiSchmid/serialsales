@@ -4,6 +4,13 @@
   "main": "@tanstack/react-start/server-entry",
   "compatibility_date": "2026-06-18",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "serialsales.nicolaischmid.com",
+      "custom_domain": true
+    }
+  ],
   "observability": {
     "enabled": true
   }
