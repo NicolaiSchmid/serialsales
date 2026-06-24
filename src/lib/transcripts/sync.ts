@@ -7,6 +7,7 @@ import {
   videoIdFromTranscriptKey,
 } from './format'
 import {
+  fetchIsShort,
   fetchLatestChannelVideos,
   fetchVideoTitle,
   fetchVideoTranscript,
@@ -20,6 +21,9 @@ const MAX_FAILURE_AGE_MS = 24 * 60 * 60 * 1000
 // resolved titles are cached in index.json, so this only matters until the
 // archive is fully resolved.
 const MAX_TITLE_LOOKUPS = 60
+// Cap longform/shortform probes per run for the same reason; the verdict is
+// cached in index.json, so this only bites until the archive is fully classified.
+const MAX_SHORT_LOOKUPS = 100
 
 type SyncOptions = {
   cron?: string
@@ -44,6 +48,7 @@ type IndexEntry = {
   publishedAt: string | null
   thumbnailUrl: string | null
   youtubeUrl: string | null
+  isShort: boolean | null
 }
 
 type SyncResult = {
@@ -218,7 +223,7 @@ async function writeTranscriptIndex(
   generatedAt: string,
   videos: Array<YouTubeVideo>,
 ) {
-  const titleCache = await readIndexTitleCache(bucket)
+  const { titles: titleCache, shorts: shortCache } = await readIndexCaches(bucket)
   // The channel feed carries real titles for the latest ~15 videos. Prefer them
   // for seed keys with no embedded title, so the newest entries never need a
   // per-video lookup and the InnerTube fallback only covers the older backlog.
@@ -230,7 +235,11 @@ async function writeTranscriptIndex(
     }
   }
 
-  const pending: Array<{ entry: IndexEntry; needsTitle: boolean }> = []
+  const pending: Array<{
+    entry: IndexEntry
+    needsTitle: boolean
+    needsShort: boolean
+  }> = []
   let cursor: string | undefined
 
   do {
@@ -252,6 +261,7 @@ async function writeTranscriptIndex(
       const titleFromKey = meta.title !== videoId
       const feedTitle = feedTitles.get(videoId)
       const cached = titleCache.get(videoId)
+      const cachedShort = shortCache.get(videoId)
 
       pending.push({
         entry: {
@@ -266,8 +276,10 @@ async function writeTranscriptIndex(
           publishedAt: meta.publishedAt,
           thumbnailUrl: meta.thumbnailUrl,
           youtubeUrl: meta.youtubeUrl,
+          isShort: cachedShort ?? null,
         },
         needsTitle: !titleFromKey && !feedTitle && !cached,
+        needsShort: cachedShort === undefined,
       })
     }
 
@@ -289,6 +301,17 @@ async function writeTranscriptIndex(
     }
   }
 
+  let probes = 0
+
+  for (const item of pending) {
+    if (!item.needsShort || probes >= MAX_SHORT_LOOKUPS) {
+      continue
+    }
+
+    probes += 1
+    item.entry.isShort = await fetchIsShort(item.entry.videoId)
+  }
+
   const files = pending.map((item) => item.entry)
 
   // Newest first — the archive reads as a reverse-chronological feed.
@@ -302,34 +325,46 @@ async function writeTranscriptIndex(
   })
 }
 
-async function readIndexTitleCache(bucket: R2Bucket) {
-  const cache = new Map<string, string>()
+// Both caches come from the previous index, so read it once. Titles carry
+// forward resolved names; shorts carry forward the longform/shortform verdict so
+// each video is probed at most once. A `null` verdict (a failed/ambiguous probe)
+// is intentionally not cached, so it is retried next run.
+async function readIndexCaches(bucket: R2Bucket) {
+  const titles = new Map<string, string>()
+  const shorts = new Map<string, boolean>()
   const object = await bucket.get('index.json')
 
   if (!object) {
-    return cache
+    return { titles, shorts }
   }
 
   try {
     const data = (await object.json()) as {
-      files?: Array<{ videoId?: string; title?: string }>
+      files?: Array<{ videoId?: string; title?: string; isShort?: unknown }>
     }
 
     for (const file of data.files ?? []) {
+      if (!file.videoId) {
+        continue
+      }
+
       if (
-        file.videoId &&
         typeof file.title === 'string' &&
         file.title &&
         file.title !== file.videoId
       ) {
-        cache.set(file.videoId, file.title)
+        titles.set(file.videoId, file.title)
+      }
+
+      if (typeof file.isShort === 'boolean') {
+        shorts.set(file.videoId, file.isShort)
       }
     }
   } catch {
-    // A malformed index just means we re-resolve titles this run.
+    // A malformed index just means we re-resolve titles and re-probe this run.
   }
 
-  return cache
+  return { titles, shorts }
 }
 
 async function putJson(bucket: R2Bucket, key: string, value: unknown) {

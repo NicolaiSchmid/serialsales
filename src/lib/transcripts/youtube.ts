@@ -113,6 +113,49 @@ export async function fetchVideoTitle(
   }
 }
 
+// YouTube serves `/shorts/<id>` with a 200 for an actual Short but redirects it
+// to `/watch?v=<id>` for regular long-form videos — an authoritative, key-free
+// signal for the longform/shortform split. The SOCS cookie skips the EU consent
+// interstitial that would otherwise mask the real status with a redirect to
+// consent.youtube.com. Returns null on network failure or an ambiguous response
+// so the caller retries on a later run instead of caching a wrong answer.
+export async function fetchIsShort(
+  videoId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean | null> {
+  try {
+    const response = await fetchImpl(`https://www.youtube.com/shorts/${videoId}`, {
+      method: 'HEAD',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': CLIENT_PROFILES[0].userAgent,
+        // Static "consent rejected" cookie — enough to bypass the gate.
+        Cookie: 'SOCS=CAISEwgDEgk2NzY0MjU1NzcaAmVuIAEaBgiAo_q7Bg',
+      },
+    })
+
+    if (response.status === 200) {
+      return true
+    }
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location') ?? ''
+
+      if (location.includes('/watch')) {
+        return false
+      }
+
+      if (location.includes('/shorts/')) {
+        return true
+      }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
 export async function fetchVideoTranscript(
   videoId: string,
   fetchImpl: typeof fetch = fetch,
