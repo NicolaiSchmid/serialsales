@@ -18,15 +18,13 @@ type Paragraph = {
 
 type FormatFilter = 'all' | 'long' | 'short'
 
-// The cron classifies each video via YouTube's /shorts redirect and records it
-// as `isShort` in the index. Until a video has been probed it stays null, so we
-// fall back to transcript size: Shorts produce tiny SRTs (a few KB) while
-// long-form runs to tens of KB, and the gap between the two is wide.
-const SHORT_SIZE_FALLBACK_BYTES = 6000
-
-function isShortFile(file: TranscriptFile) {
-  return file.isShort ?? file.size < SHORT_SIZE_FALLBACK_BYTES
-}
+// The cron classifies each video via YouTube's /shorts redirect and records the
+// verdict as `isShort` in the index (true = Short, false = long-form). A video
+// is only surfaced under Long/Short once it carries that authoritative verdict;
+// anything still unclassified — not yet probed, or a probe that errored/was
+// ambiguous (isShort === null) — appears only under "All". We never infer the
+// format from transcript size or any other proxy: an unknown stays unknown
+// rather than risking a wrong classification.
 
 function Home() {
   const posthog = usePostHog()
@@ -111,11 +109,13 @@ function Home() {
     const normalizedQuery = query.trim().toLowerCase()
 
     return files.filter((file) => {
-      if (format === 'short' && !isShortFile(file)) {
+      // Only the authoritative verdict filters; an unknown (null) is never
+      // treated as either format, so it simply falls outside Long and Short.
+      if (format === 'short' && file.isShort !== true) {
         return false
       }
 
-      if (format === 'long' && isShortFile(file)) {
+      if (format === 'long' && file.isShort !== false) {
         return false
       }
 
