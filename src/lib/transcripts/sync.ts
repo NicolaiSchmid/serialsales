@@ -21,9 +21,16 @@ const MAX_FAILURE_AGE_MS = 24 * 60 * 60 * 1000
 // resolved titles are cached in index.json, so this only matters until the
 // archive is fully resolved.
 const MAX_TITLE_LOOKUPS = 60
-// Cap longform/shortform probes per run for the same reason; the verdict is
-// cached in index.json, so this only bites until the archive is fully classified.
-const MAX_SHORT_LOOKUPS = 100
+// Cap longform/shortform probes per run; the verdict is cached in index.json, so
+// this only bites until the archive is fully classified. Sized to re-probe the
+// whole archive in a single run (each probe is one HEAD subrequest, far within
+// the plan's per-invocation limit).
+const MAX_SHORT_LOOKUPS = 500
+// Bump when the shortform probe logic changes so previously cached verdicts are
+// invalidated and re-probed once. v1 keyed off an intermediate status code,
+// which mislabelled every long-form video as a Short under Cloudflare's redirect
+// handling; v2 keys off the resolved URL.
+const SHORT_PROBE_VERSION = 2
 
 type SyncOptions = {
   cron?: string
@@ -321,6 +328,7 @@ async function writeTranscriptIndex(
 
   await putJson(bucket, 'index.json', {
     generatedAt,
+    shortProbeVersion: SHORT_PROBE_VERSION,
     files,
   })
 }
@@ -328,7 +336,9 @@ async function writeTranscriptIndex(
 // Both caches come from the previous index, so read it once. Titles carry
 // forward resolved names; shorts carry forward the longform/shortform verdict so
 // each video is probed at most once. A `null` verdict (a failed/ambiguous probe)
-// is intentionally not cached, so it is retried next run.
+// is intentionally not cached, so it is retried next run. The shorts cache is
+// only trusted when the stored probe version matches the current one — a bump
+// discards stale verdicts and forces a one-time re-probe of the whole archive.
 async function readIndexCaches(bucket: R2Bucket) {
   const titles = new Map<string, string>()
   const shorts = new Map<string, boolean>()
@@ -340,8 +350,11 @@ async function readIndexCaches(bucket: R2Bucket) {
 
   try {
     const data = (await object.json()) as {
+      shortProbeVersion?: unknown
       files?: Array<{ videoId?: string; title?: string; isShort?: unknown }>
     }
+
+    const shortsValid = data.shortProbeVersion === SHORT_PROBE_VERSION
 
     for (const file of data.files ?? []) {
       if (!file.videoId) {
@@ -356,7 +369,7 @@ async function readIndexCaches(bucket: R2Bucket) {
         titles.set(file.videoId, file.title)
       }
 
-      if (typeof file.isShort === 'boolean') {
+      if (shortsValid && typeof file.isShort === 'boolean') {
         shorts.set(file.videoId, file.isShort)
       }
     }

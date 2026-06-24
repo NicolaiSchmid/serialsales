@@ -113,12 +113,18 @@ export async function fetchVideoTitle(
   }
 }
 
-// YouTube serves `/shorts/<id>` with a 200 for an actual Short but redirects it
-// to `/watch?v=<id>` for regular long-form videos — an authoritative, key-free
-// signal for the longform/shortform split. The SOCS cookie skips the EU consent
-// interstitial that would otherwise mask the real status with a redirect to
-// consent.youtube.com. Returns null on network failure or an ambiguous response
-// so the caller retries on a later run instead of caching a wrong answer.
+// YouTube keeps `/shorts/<id>` on the Shorts page for an actual Short but
+// redirects it to `/watch?v=<id>` for regular long-form videos — an
+// authoritative, key-free signal for the longform/shortform split.
+//
+// We follow redirects and key off the FINAL url, NOT an intermediate status
+// code: `redirect: 'manual'` behaves differently across runtimes (Node's undici
+// exposes the 3xx, but Cloudflare's workerd follows it), so reading status alone
+// classified every long-form video — which 200s at /watch after the follow — as
+// a Short. The resolved `response.url` is well-defined in both runtimes. The
+// SOCS cookie skips the EU consent interstitial. Anything that doesn't clearly
+// resolve to /shorts or /watch (a 404 for a missing id, a consent/bot page, a
+// network error) returns null so it stays unclassified instead of guessed.
 export async function fetchIsShort(
   videoId: string,
   fetchImpl: typeof fetch = fetch,
@@ -126,7 +132,7 @@ export async function fetchIsShort(
   try {
     const response = await fetchImpl(`https://www.youtube.com/shorts/${videoId}`, {
       method: 'HEAD',
-      redirect: 'manual',
+      redirect: 'follow',
       headers: {
         'User-Agent': CLIENT_PROFILES[0].userAgent,
         // Static "consent rejected" cookie — enough to bypass the gate.
@@ -134,20 +140,18 @@ export async function fetchIsShort(
       },
     })
 
-    if (response.status === 200) {
-      return true
+    if (!response.ok) {
+      return null
     }
 
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location') ?? ''
+    const finalUrl = response.url
 
-      if (location.includes('/watch')) {
-        return false
-      }
+    if (finalUrl.includes('/watch')) {
+      return false
+    }
 
-      if (location.includes('/shorts/')) {
-        return true
-      }
+    if (finalUrl.includes('/shorts/')) {
+      return true
     }
 
     return null
