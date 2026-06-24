@@ -16,6 +16,18 @@ type Paragraph = {
   text: string
 }
 
+type FormatFilter = 'all' | 'long' | 'short'
+
+// The cron classifies each video via YouTube's /shorts redirect and records it
+// as `isShort` in the index. Until a video has been probed it stays null, so we
+// fall back to transcript size: Shorts produce tiny SRTs (a few KB) while
+// long-form runs to tens of KB, and the gap between the two is wide.
+const SHORT_SIZE_FALLBACK_BYTES = 6000
+
+function isShortFile(file: TranscriptFile) {
+  return file.isShort ?? file.size < SHORT_SIZE_FALLBACK_BYTES
+}
+
 function Home() {
   const posthog = usePostHog()
   const [files, setFiles] = useState<Array<TranscriptFile>>([])
@@ -26,6 +38,7 @@ function Home() {
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
   const [query, setQuery] = useState('')
+  const [format, setFormat] = useState<FormatFilter>('all')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -97,12 +110,18 @@ function Home() {
   const filteredFiles = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
 
-    if (!normalizedQuery) {
-      return files
-    }
+    return files.filter((file) => {
+      if (format === 'short' && !isShortFile(file)) {
+        return false
+      }
 
-    return files.filter((file) => file.title.toLowerCase().includes(normalizedQuery))
-  }, [files, query])
+      if (format === 'long' && isShortFile(file)) {
+        return false
+      }
+
+      return !normalizedQuery || file.title.toLowerCase().includes(normalizedQuery)
+    })
+  }, [files, query, format])
 
   const selectedFiles = useMemo(
     () => files.filter((file) => selectedKeys.has(file.key)),
@@ -220,6 +239,29 @@ function Home() {
             ) : null}
           </label>
 
+          <div className="segmented" role="group" aria-label="Filter by format">
+            {(
+              [
+                ['all', 'All'],
+                ['long', 'Long'],
+                ['short', 'Short'],
+              ] as Array<[FormatFilter, string]>
+            ).map(([value, label]) => (
+              <button
+                aria-pressed={format === value}
+                className={`segmented-btn${format === value ? ' segmented-btn--active' : ''}`}
+                key={value}
+                onClick={() => {
+                  setFormat(value)
+                  posthog.capture('format_filter_changed', { format: value })
+                }}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           <div className="controls-meta">
             <span className="count">
               {filteredFiles.length}
@@ -252,7 +294,7 @@ function Home() {
           </div>
         ) : filteredFiles.length === 0 ? (
           <div className="empty-state">
-            <p>{files.length === 0 ? 'No transcripts in the archive yet.' : 'No transcripts match your search.'}</p>
+            <p>{files.length === 0 ? 'No transcripts in the archive yet.' : 'No transcripts match your filters.'}</p>
           </div>
         ) : (
           <div className="grid">

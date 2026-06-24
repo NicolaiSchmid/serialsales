@@ -23,6 +23,7 @@ export type TranscriptFile = {
   thumbnailUrl: string | null
   youtubeUrl: string | null
   publishedAt: string | null
+  isShort: boolean | null
 }
 
 export const appRouter = {
@@ -90,6 +91,7 @@ async function readIndexFiles(): Promise<Array<TranscriptFile> | null> {
         thumbnailUrl: (entry.thumbnailUrl as string) ?? meta.thumbnailUrl,
         youtubeUrl: (entry.youtubeUrl as string) ?? meta.youtubeUrl,
         publishedAt: (entry.publishedAt as string) ?? meta.publishedAt,
+        isShort: typeof entry.isShort === 'boolean' ? entry.isShort : null,
       })
     }
 
@@ -125,6 +127,8 @@ async function listFilesFromBucket(): Promise<Array<TranscriptFile>> {
         size: object.size,
         uploaded: object.uploaded?.toISOString() ?? null,
         ...meta,
+        // No index to probe against in this fallback; the UI infers from size.
+        isShort: null,
       })
     }
 

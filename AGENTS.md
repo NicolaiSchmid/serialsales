@@ -57,6 +57,10 @@ Before substantial work:
   - `failures/`: temporary fetch/no-caption records, retried after 24 hours.
   - `index.json`: UI source of truth — every transcript with display metadata
     (title, publication date, thumbnail), derived from the key in `format.ts`.
+    Also carries `isShort` (longform/shortform): the cron probes YouTube's
+    `/shorts/<id>` redirect once per video (200 = Short, redirect to `/watch` =
+    long-form) and caches the verdict here. A null `isShort` is unclassified;
+    the UI falls back to transcript size until the cron backfills it.
   - `sync/latest.json` and `sync/queue.json`: cron observability.
 - Add D1 later only if client-side/static search becomes insufficient.
 - Do not add a container or Hermes dependency unless the TypeScript caption fetch path becomes unreliable.

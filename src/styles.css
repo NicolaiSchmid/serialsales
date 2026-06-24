@@ -172,6 +172,41 @@ h1 {
   white-space: nowrap;
 }
 
+.segmented {
+  display: inline-flex;
+  padding: 0.2rem;
+  gap: 0.15rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.segmented-btn {
+  min-height: 2.05rem;
+  padding: 0 0.95rem;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: transparent;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.segmented-btn:hover {
+  color: var(--ink);
+}
+
+.segmented-btn--active {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+.segmented-btn--active:hover {
+  color: #ffffff;
+}
+
 /* ---------- Buttons ---------- */
 
 .btn {
@@ -581,6 +616,14 @@ h1 {
 
   .search {
     max-width: none;
+  }
+
+  .segmented {
+    justify-content: stretch;
+  }
+
+  .segmented-btn {
+    flex: 1;
   }
 
   .controls-meta {
