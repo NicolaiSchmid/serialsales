@@ -17,13 +17,16 @@ const TRANSCRIPTS_PREFIX = 'transcripts/'
 const VIDEOS_PREFIX = 'videos/'
 const FAILURES_PREFIX = 'failures/'
 const MAX_FAILURE_AGE_MS = 24 * 60 * 60 * 1000
-// Cap oEmbed title lookups per run to stay well within subrequest limits;
-// resolved titles are cached in index.json, so this only matters until the
-// archive is fully resolved.
-const MAX_TITLE_LOOKUPS = 60
-// Cap longform/shortform probes per run for the same reason; the verdict is
-// cached in index.json, so this only bites until the archive is fully classified.
-const MAX_SHORT_LOOKUPS = 100
+// Title resolution (oEmbed) and shortform probing (/shorts redirect) both make
+// outbound fetches, so they share one per-run budget. Cloudflare's free/bundled
+// plan caps an invocation at 50 subrequests (fetch + R2 combined), so we keep
+// combined lookups well under that, leaving headroom for the feed read,
+// transcript downloads, and R2 writes. Both verdicts are cached in index.json,
+// and crucially each run persists whatever it resolved this pass before the cap
+// could ever be reached — so the backfill makes durable forward progress every
+// run and converges over a few runs, instead of trying to classify the whole
+// backlog at once and getting stuck in a failing loop that never writes.
+const MAX_LOOKUPS_PER_RUN = 25
 
 type SyncOptions = {
   cron?: string
@@ -286,10 +289,14 @@ async function writeTranscriptIndex(
     cursor = page.truncated ? page.cursor : undefined
   } while (cursor)
 
+  // Titles and short probes draw from the same budget: titles consume first,
+  // probes take whatever remains. In steady state titles are already cached, so
+  // probes get the full budget; on a fresh archive both share it and the rest is
+  // picked up on later runs.
   let lookups = 0
 
   for (const item of pending) {
-    if (!item.needsTitle || lookups >= MAX_TITLE_LOOKUPS) {
+    if (!item.needsTitle || lookups >= MAX_LOOKUPS_PER_RUN) {
       continue
     }
 
@@ -301,14 +308,12 @@ async function writeTranscriptIndex(
     }
   }
 
-  let probes = 0
-
   for (const item of pending) {
-    if (!item.needsShort || probes >= MAX_SHORT_LOOKUPS) {
+    if (!item.needsShort || lookups >= MAX_LOOKUPS_PER_RUN) {
       continue
     }
 
-    probes += 1
+    lookups += 1
     item.entry.isShort = await fetchIsShort(item.entry.videoId)
   }
 
